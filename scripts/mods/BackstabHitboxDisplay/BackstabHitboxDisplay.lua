@@ -53,9 +53,6 @@ local line_world = nil
 local accumulated_time = 0
 local world_diag_time = 0
 
--- Reusable scratch list so we don't allocate a table every frame.
-local nearby = {}
-
 -------------------------------------------------------------------------------
 -- Enemy enumeration
 -- NOTE: Side-system API names below are best-recall and MUST be verified against a
@@ -220,7 +217,9 @@ local function measure_head_radius(world, unit, center)
 			return nil
 		end
 
-		local sum, n = 0, 0
+		-- Take the MAX surface distance across directions = smallest sphere that fully
+		-- encloses the head. (Averaging undershoots on narrow/elongated heads.)
+		local maxr = 0
 		for _, d in ipairs(MEASURE_DIRS) do
 			local start = center + d * 0.6
 			local hits = PhysicsWorld.raycast(pw, start, -d, 0.6, "all", "types", "both",
@@ -230,16 +229,16 @@ local function measure_head_radius(world, unit, center)
 					local hit = hits[i]
 					if actor_set[hit[4]] then            -- hit[4] = actor (per hit_scan.lua)
 						local r = Vector3.length(hit[1] - center)   -- hit[1] = position
-						if r > 0.02 and r < 0.6 then
-							sum, n = sum + r, n + 1
+						if r > 0.02 and r < 0.6 and r > maxr then
+							maxr = r
 						end
 						break
 					end
 				end
 			end
 		end
-		if n > 0 then
-			return sum / n
+		if maxr > 0 then
+			return maxr
 		end
 		return nil
 	end)
@@ -335,7 +334,9 @@ local function rebuild(lo_cone, lo_top, world)
 	local arrow_color = Color(alpha, 80, 160, 255)
 	local head_color = Color(alpha, 255, 220, 40)
 
-	-- relation_units is an ARRAY (index -> unit); iterate values with ipairs.
+	-- Fresh list each rebuild -- a reused table would leave stale entries from a larger
+	-- previous frame that table.sort would then mix in, dropping real enemies.
+	local nearby = {}
 	local count = 0
 	for _, unit in ipairs(enemy_units) do
 		if Unit.alive(unit) and (not only_special or is_important_enemy(unit)) then
@@ -381,11 +382,6 @@ local function rebuild(lo_cone, lo_top, world)
 				draw_head_marker(lo_top, hp, head_radius(world, e.unit, hp, head_scale), head_color)
 			end
 		end
-	end
-
-	-- Clear scratch tail so stale entries don't leak into the next pass.
-	for i = draw_n + 1, count do
-		nearby[i] = nil
 	end
 end
 
