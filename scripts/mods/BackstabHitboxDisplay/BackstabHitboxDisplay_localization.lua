@@ -60,9 +60,9 @@ return {
 		en = "Counter pop animation",
 	},
 	show_weakspot_icon = {
-		en = "Weakspot icon on backstab counter",
+		en = "Show weakspot \"+\" on counter",
 	},
 	debug_logging = {
-		en = "Debug logging (off)",
+		en = "Debug logging",
 	},
 }

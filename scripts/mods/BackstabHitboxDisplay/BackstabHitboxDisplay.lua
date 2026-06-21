@@ -555,7 +555,11 @@ local function on_attack_result(attacked_unit, attacking_unit, hit_weakspot, att
 	if not (attack_result == "damaged" or attack_result == "died") then
 		return
 	end
-	register_melee_hit(compute_backstab(attacked_unit, attacking_unit) == true, attack_result == "died", hit_weakspot == true)
+	local is_bs = compute_backstab(attacked_unit, attacking_unit) == true
+	if mod:get("debug_logging") then
+		mod:info("[hit] backstab=%s weakspot=%s result=%s", tostring(is_bs), tostring(hit_weakspot), tostring(attack_result))
+	end
+	register_melee_hit(is_bs, attack_result == "died", hit_weakspot == true)
 end
 
 if CLASS and CLASS.AttackReportManager and CLASS.AttackReportManager.add_attack_result then
