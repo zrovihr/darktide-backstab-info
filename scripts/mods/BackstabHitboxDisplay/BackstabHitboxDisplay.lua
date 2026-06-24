@@ -393,7 +393,22 @@ end
 -- or removed by a future patch, the cone simply switches itself off -- it must never
 -- be the reason the game crashes.
 -------------------------------------------------------------------------------
+-- World drawing self-heals across world teardown / level reload. When the level world
+-- is destroyed, the cached line object goes stale and LineObject.* throws
+-- ("LineObject expected, got userdata"). Rather than disable for the whole session, we
+-- drop the cached objects so the next frame rebuilds them in the CURRENT world. Only a
+-- persistent failure -- a real game-API change -- latches the feature off.
 local cone_dead = false
+local cone_fail_streak = 0
+local CONE_FAIL_LIMIT = 30   -- consecutive failing frames before giving up for good
+
+local function invalidate_line_objects()
+	-- The old objects belong to a world that's gone; the engine reclaims them with it.
+	line_object = nil
+	line_object_top = nil
+	line_world = nil
+	accumulated_time = 0
+end
 
 local function update_impl(dt)
 	if not mod:get("enabled") then
@@ -455,11 +470,26 @@ mod.update = function(dt)
 		return
 	end
 	local ok, err = pcall(update_impl, dt)
-	if not ok then
-		cone_dead = true
-		-- Log once; never let the logging itself throw either.
+	if ok then
+		cone_fail_streak = 0
+		return
+	end
+	-- Recoverable in almost all cases: a stale line object after a world reload. Drop
+	-- the cache so the next frame recreates everything in the live world.
+	invalidate_line_objects()
+	cone_fail_streak = cone_fail_streak + 1
+	-- Log the first failure and the give-up point only -- never spam, never let the
+	-- logging itself throw.
+	if cone_fail_streak == 1 or cone_fail_streak == CONE_FAIL_LIMIT then
 		pcall(function()
-			mod:info("[safety] world drawing disabled after error: %s", tostring(err))
+			mod:info("[safety] world draw error (%d/%d), recovering: %s",
+				cone_fail_streak, CONE_FAIL_LIMIT, tostring(err))
+		end)
+	end
+	if cone_fail_streak >= CONE_FAIL_LIMIT then
+		cone_dead = true
+		pcall(function()
+			mod:info("[safety] world drawing disabled after %d consecutive errors", CONE_FAIL_LIMIT)
 		end)
 	end
 end
