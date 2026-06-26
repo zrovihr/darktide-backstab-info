@@ -6,6 +6,7 @@ mod.bs_best = mod.bs_best or 0     -- best this session
 mod.bs_flash = mod.bs_flash or false   -- pulse request (any backstab hit)
 mod.bs_kill = mod.bs_kill or false     -- red-flash request (backstab that killed)
 mod.bs_weak = mod.bs_weak or false     -- latest backstab hit also hit a weakspot
+mod.bs_cross_flash = mod.bs_cross_flash or false   -- request to flash the GAME crosshair
 
 -- =====================================================================================
 -- Backstab Hitbox Display
@@ -268,20 +269,135 @@ local function head_radius(world, unit, center, scale)
 end
 
 -------------------------------------------------------------------------------
--- Only worth showing cones on enemies you'd line up a backstab on. Trash (pure
--- "horde" breeds) dies to anything. Tags confirmed in scripts/utilities/breed.lua.
+-- Which enemies are worth a cone is a per-player taste, so we split breeds into
+-- three buckets and let each be toggled independently. Tags confirmed in
+-- scripts/utilities/breed.lua: elite/special/ogryn/monster/captain.
+--   "boss"  = monster or captain          (monstrosities, Twins, etc.)
+--   "elite" = elite or special or ogryn   (Crushers, Trappers, Maulers, ...)
+--   "small" = everything else             (trash horde breeds)
 -------------------------------------------------------------------------------
-local function is_important_enemy(unit)
+local function enemy_category(unit)
 	local ude = ScriptUnit.has_extension(unit, "unit_data_system")
 	local breed = ude and ude:breed()
 	local tags = breed and breed.tags
 	if not tags then
+		return "small"   -- unknown breed -> treat as trash
+	end
+	if tags.monster or tags.captain then
+		return "boss"
+	end
+	if tags.elite or tags.special or tags.ogryn then
+		return "elite"
+	end
+	return "small"
+end
+
+local function is_enemy_shown(unit, show_small, show_elite, show_boss)
+	local cat = enemy_category(unit)
+	if cat == "boss" then
+		return show_boss
+	elseif cat == "elite" then
+		return show_elite
+	end
+	return show_small
+end
+
+-- Unit.alive() stays true while a corpse/ragdoll lingers in the world, so the overlay
+-- would hang on the body until the engine despawns it. The health extension flips to
+-- dead the instant it's killed -- gate on that so the cone/sphere vanish immediately.
+-- Fails OPEN (treats as alive) if the extension is missing, per patch-safety.
+local function is_target_alive(unit)
+	local health_ext = ScriptUnit.has_extension(unit, "health_system")
+	if health_ext and not health_ext:is_alive() then
 		return false
 	end
-	if tags.elite or tags.special or tags.ogryn or tags.monster or tags.captain then
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Optional occlusion cull. Hide the overlay for enemies whose head is blocked
+-- from the player's view by world geometry.
+--
+-- Uses the minion line-of-sight filter, which hits world/static geometry but IGNORES all
+-- character bodies (player + minions). That gives us exactly what we want: walls/cover
+-- occlude, other enemies never do, and -- critically -- the ray doesn't dead-end on the
+-- player's own collision capsule (the eye sits inside it). The player-shooting filter was
+-- tried but it hits the player at ~0m every time, so "closest" never reached the wall.
+-- (An earlier minion-filter test looked broken only because of a since-fixed raycast
+-- return-value bug.) Form confirmed: scripts/extension_systems/cover/utilities/cover_slots.lua.
+-- Eye origin from the first-person unit, per action_throw_grenade.lua.
+-------------------------------------------------------------------------------
+local LOS_FILTER = "filter_minion_line_of_sight_check"
+
+local function eye_position(player_unit)
+	local ok, pos = pcall(function()
+		local fpe = ScriptUnit.has_extension(player_unit, "first_person_system")
+		local fp_unit = fpe and fpe:first_person_unit()
+		if fp_unit then
+			return Unit.world_position(fp_unit, 1)
+		end
+		return nil
+	end)
+	if ok and pos then
+		return pos
+	end
+	-- Patch-safe fallback: roughly eye height above the player's feet.
+	return Unit.world_position(player_unit, 1) + Vector3(0, 0, 1.6)
+end
+
+-- True if nothing in the world blocks the straight line from `eye` to `target`.
+-- Fails OPEN (returns true) on any uncertainty, so the cull can never hide everything.
+--
+-- This filter ignores character bodies, so a hit is always world geometry. We still key
+-- off the hit DISTANCE: occluded only when a wall sits clearly BETWEEN the eye and the
+-- head. A tiny START_OFFSET keeps us from grazing anything right at the camera; TARGET_CLEAR
+-- ignores a wall flush behind the head so it doesn't count as occluding the head in front.
+local START_OFFSET = 0.1   -- small nudge off the camera origin
+local NEAR_SELF = 0.3      -- ignore any hit this close to the ray start
+local TARGET_CLEAR = 1.0   -- ignore hits within this of the head (wall flush behind it)
+
+-- Returns: visible(bool), dist(number), hit_dist(number or nil for "no hit").
+-- The extra returns are purely for the debug diagnostic.
+local function head_visible(pw, eye, target)
+	if not (pw and eye and target) then
 		return true
 	end
-	return false
+	local dist = Vector3_distance(eye, target)
+	if dist <= NEAR_SELF + TARGET_CLEAR then
+		return true, dist   -- too close to meaningfully test; treat as visible
+	end
+	local dir = (target - eye) * (1 / dist)
+	local origin = eye + dir * START_OFFSET     -- start past our own capsule
+	local ray_len = dist - START_OFFSET
+	if ray_len <= 0 then
+		return true, dist
+	end
+	local ok, res = pcall(function()
+		-- "closest" returns: hit(bool), position(Vector3), distance(number), normal, actor.
+		local hit, position, distance = PhysicsWorld.raycast(pw, origin, dir, ray_len, "closest", "collision_filter", LOS_FILTER)
+		if not hit then
+			return false   -- definitively no hit
+		end
+		if type(distance) == "number" then
+			return distance + START_OFFSET           -- distance is measured from the offset origin
+		end
+		if position then
+			return Vector3_distance(eye, position)   -- fallback: derive from hit position
+		end
+		return false
+	end)
+	if not ok then
+		return true, dist, nil, tostring(res)   -- raycast ERRORED; res = message (fail open)
+	end
+	if not res then
+		return true, dist, nil, nil   -- genuine clear line of sight (no hit)
+	end
+	local hit_dist = res
+	-- Occluded only if the blocker is genuinely in between, not our body or theirs.
+	if hit_dist <= NEAR_SELF or hit_dist >= dist - TARGET_CLEAR then
+		return true, dist, hit_dist, nil
+	end
+	return false, dist, hit_dist, nil
 end
 
 -------------------------------------------------------------------------------
@@ -321,11 +437,25 @@ local function rebuild(lo_cone, lo_top, world)
 	local thickness = mod:get("cone_thickness")
 	local draw_overhead = mod:get("draw_overhead")
 	local overhead_height = mod:get("overhead_height")
-	local only_special = mod:get("only_special_enemies")
+	local overhead_distance = mod:get("overhead_distance")
+	local show_small = mod:get("show_small_mobs")
+	local show_elite = mod:get("show_elites")
+	local show_boss = mod:get("show_bosses")
 	local head_scale = mod:get("head_marker_scale")
+	local occlusion_cull = mod:get("occlusion_cull")
+
+	-- How far the cone feature reaches: the ground cone, plus the overhead cone which
+	-- has its own (possibly larger) distance.
+	local cone_reach = 0
+	if show_cone then
+		cone_reach = cone_distance
+		if draw_overhead and overhead_distance > cone_reach then
+			cone_reach = overhead_distance
+		end
+	end
 
 	-- Collect out to whichever feature reaches furthest.
-	local collect_distance = math.max(show_cone and cone_distance or 0, show_head_marker and head_distance or 0)
+	local collect_distance = math.max(cone_reach, show_head_marker and head_distance or 0)
 	if collect_distance <= 0 then
 		return
 	end
@@ -339,7 +469,7 @@ local function rebuild(lo_cone, lo_top, world)
 	local nearby = {}
 	local count = 0
 	for _, unit in ipairs(enemy_units) do
-		if Unit.alive(unit) and (not only_special or is_important_enemy(unit)) then
+		if Unit.alive(unit) and is_target_alive(unit) and is_enemy_shown(unit, show_small, show_elite, show_boss) then
 			local pos = Unit.world_position(unit, 1)
 			local dist = Vector3_distance(player_pos, pos)
 			if dist <= collect_distance then
@@ -356,31 +486,94 @@ local function rebuild(lo_cone, lo_top, world)
 
 	local draw_n = math.min(count, max_enemies)
 	if diag then
-		mod:info("[cone] in_range=%d drawn=%d (cone<=%dm head<=%dm)",
-			count, draw_n, cone_distance, head_distance)
+		mod:info("[cone] in_range=%d drawn=%d (cone<=%dm overhead<=%dm head<=%dm)",
+			count, draw_n, cone_distance, overhead_distance, head_distance)
 	end
+	-- Occlusion setup (only when culling): the physics world to ray against and the
+	-- player's eye point. If either is unavailable this rebuild, fall back to drawing
+	-- everything rather than hiding it all.
+	local eye, pw
+	if occlusion_cull then
+		local ok_pw
+		ok_pw, pw = pcall(World.physics_world, world)
+		if ok_pw and pw then
+			eye = eye_position(player_unit)
+		end
+		if not (pw and eye) then
+			occlusion_cull = false
+		end
+	end
+
+	local occluded_count = 0
+	-- Debug categorisation of every drawn enemy's LOS ray this rebuild.
+	local dbg_clear, dbg_nearbody, dbg_wall, dbg_nearest = 0, 0, 0, nil
+	local dbg_err = nil
 	for i = 1, draw_n do
 		local e = nearby[i]
-		local forward = Quaternion.forward(Unit.world_rotation(e.unit, 1))
 
-		-- Cones (depth-tested), within the cone distance.
-		if show_cone and e.dist <= cone_distance then
-			local ground_z = e.pos.z + GROUND_LIFT
-			draw_backstab_wedge(lo_cone, e.pos, forward, arc_deg, radius, cone_color, ground_z, thickness)
-			if show_arrow then
-				draw_facing_arrow(lo_cone, e.pos, forward, arrow_color, ground_z, thickness)
+		-- Head point feeds the head marker and/or the occlusion test -- compute it once.
+		local want_head_marker = show_head_marker and e.dist <= head_distance
+		local hp = (want_head_marker or occlusion_cull) and head_position(e.unit) or nil
+
+		-- Optional occlusion cull: if the head is behind world geometry, this enemy gets
+		-- nothing -- neither cone nor marker.
+		local occluded = false
+		if occlusion_cull then
+			local target = hp or (e.pos + Vector3(0, 0, 1.4))   -- fallback aim point if no head zone
+			local vis, d, hd, err = head_visible(pw, eye, target)
+			occluded = not vis
+			if occluded then
+				occluded_count = occluded_count + 1
 			end
-			if draw_overhead then
-				draw_backstab_wedge(lo_cone, e.pos, forward, arc_deg, radius, cone_color, e.pos.z + overhead_height, thickness)
+			-- Categorise the ray for debugging: errored, hit nothing (clear LOS), the
+			-- enemy's own body, or a genuine wall in between?
+			if mod:get("debug_logging") then
+				if err then
+					dbg_err = err
+				elseif not hd then
+					dbg_clear = dbg_clear + 1
+				elseif hd <= NEAR_SELF or hd >= (d or 0) - TARGET_CLEAR then
+					dbg_nearbody = dbg_nearbody + 1
+				else
+					dbg_wall = dbg_wall + 1
+					if not dbg_nearest then
+						dbg_nearest = string.format("d=%.1f hit=%.1f", d or 0, hd)
+					end
+				end
 			end
 		end
 
-		-- Head weakspot marker (drawn on top), within its own distance.
-		if show_head_marker and e.dist <= head_distance then
-			local hp = head_position(e.unit)
-			if hp then
+		if not occluded then
+			local forward = Quaternion.forward(Unit.world_rotation(e.unit, 1))
+
+			-- Cones (depth-tested). The ground cone + facing arrow use the cone distance;
+			-- the overhead cone has its own (independent) distance.
+			if show_cone then
+				if e.dist <= cone_distance then
+					local ground_z = e.pos.z + GROUND_LIFT
+					draw_backstab_wedge(lo_cone, e.pos, forward, arc_deg, radius, cone_color, ground_z, thickness)
+					if show_arrow then
+						draw_facing_arrow(lo_cone, e.pos, forward, arrow_color, ground_z, thickness)
+					end
+				end
+				if draw_overhead and e.dist <= overhead_distance then
+					draw_backstab_wedge(lo_cone, e.pos, forward, arc_deg, radius, cone_color, e.pos.z + overhead_height, thickness)
+				end
+			end
+
+			-- Head weakspot marker (drawn on top), within its own distance.
+			if want_head_marker and hp then
 				draw_head_marker(lo_top, hp, head_radius(world, e.unit, hp, head_scale), head_color)
 			end
+		end
+	end
+
+	if mod:get("debug_logging") and occlusion_cull and (rebuild_calls % 5 == 0) then
+		mod:info("[cull] drawn=%d occluded=%d | clear=%d nearbody=%d WALL=%d %s",
+			draw_n, occluded_count, dbg_clear, dbg_nearbody, dbg_wall,
+			dbg_nearest and ("(" .. dbg_nearest .. ")") or "")
+		if dbg_err then
+			mod:info("[cull] RAYCAST ERROR: %s", dbg_err)
 		end
 	end
 end
@@ -558,6 +751,7 @@ local function register_melee_hit(is_backstab, killed, weakspot)
 			mod.bs_best = mod.bs_combo
 		end
 		mod.bs_flash = true
+		mod.bs_cross_flash = true
 		mod.bs_weak = weakspot and true or false
 		if killed then
 			mod.bs_kill = true
@@ -600,6 +794,117 @@ if CLASS and CLASS.AttackReportManager and CLASS.AttackReportManager.add_attack_
 	end)
 	mod:info("BackstabHitboxDisplay: hooked AttackReportManager.add_attack_result (combo)")
 end
+
+-- =====================================================================================
+-- CROSSHAIR BACKSTAB FLASH (optional; separate toggle from the "Backstab" counter)
+-- -------------------------------------------------------------------------------------
+-- Briefly tints the GAME crosshair to a chosen preset colour when a backstab connects --
+-- the old "Custom Crosshair Color" idea, gated on our backstab trigger. The on-screen
+-- "Backstab" text is untouched; this is purely additive.
+--
+-- SAFETY: a reticle's colour styles point at SHARED global colour tables (e.g.
+-- UIHudSettings.color_tint_main_1) and the per-type template does NOT reassign them each
+-- frame (confirmed in crosshair_template_*). Mutating them in place would recolour every
+-- crosshair/HUD tint in the game. So we swap in our OWN fresh colour table for the flash
+-- and restore the original reference when it ends.
+-- =====================================================================================
+local CROSS_FLASH_DURATION = 0.5
+local CROSSHAIR_COLORS = {
+	green   = {  60, 255,  90 },
+	cyan    = {  40, 230, 230 },
+	blue    = {  70, 140, 255 },
+	magenta = { 255,  70, 220 },
+	yellow  = { 255, 225,  40 },
+	orange  = { 255, 150,  40 },
+	white   = { 255, 255, 255 },
+	red     = { 235,  45,  45 },
+}
+-- Tint EVERY pass that carries a colour -- the reticle (dot / cross lines) AND the
+-- directional hit-feedback segments (normal/crit/weakspot ticks). The dot crosshair used
+-- by melee weapons has only a centre dot as its reticle, so tinting just the reticle made
+-- only the dot change; tinting the hit segments too colours the whole crosshair on a
+-- backstab. The hit segments are rewritten by the engine every frame, so the per-frame
+-- "refresh rgb" branch below re-applies our colour after the engine sets them.
+local function is_color_pass(color)
+	return type(color) == "table"
+end
+
+local function crosshair_apply_tint(self, rgb)
+	local widget = self._widget
+	local style = widget and widget.style
+	if not style then
+		return
+	end
+	if self._bs_saved and self._bs_saved_widget == widget then
+		-- Our own tables are already swapped in; just refresh the rgb (safe to mutate).
+		for id in pairs(self._bs_saved) do
+			local c = style[id] and style[id].color
+			if c then
+				c[2], c[3], c[4] = rgb[1], rgb[2], rgb[3]
+			end
+		end
+		return
+	end
+	local saved = {}
+	for id, pass in pairs(style) do
+		if is_color_pass(pass.color) then
+			local c = pass.color
+			saved[id] = c                                   -- keep the original (shared) ref
+			pass.color = { c[1], rgb[1], rgb[2], rgb[3] }   -- our table; keep original alpha
+		end
+	end
+	self._bs_saved = saved
+	self._bs_saved_widget = widget
+end
+
+local function crosshair_restore(self)
+	local saved = self._bs_saved
+	local widget = self._bs_saved_widget
+	if saved and widget and widget.style then
+		for id, orig in pairs(saved) do
+			if widget.style[id] then
+				widget.style[id].color = orig   -- put the shared ref back
+			end
+		end
+	end
+	self._bs_saved = nil
+	self._bs_saved_widget = nil
+end
+
+local function crosshair_flash_update(self, dt)
+	-- Begin a flash on a fresh backstab signal, if the feature is enabled.
+	if mod.bs_cross_flash then
+		mod.bs_cross_flash = false
+		if mod:get("enabled") and mod:get("color_crosshair") then
+			self._bs_flash_t = CROSS_FLASH_DURATION
+			self._bs_flash_rgb = CROSSHAIR_COLORS[mod:get("crosshair_color")] or CROSSHAIR_COLORS.green
+		end
+	end
+
+	local t = self._bs_flash_t
+	if not t then
+		return
+	end
+	if t > 0 and self._bs_flash_rgb then
+		self._bs_flash_t = t - (dt or 0)
+		crosshair_apply_tint(self, self._bs_flash_rgb)
+	else
+		self._bs_flash_t = nil
+		crosshair_restore(self)
+	end
+end
+
+-- PATCH SAFETY: hook by class NAME (string) so DMF defers it until HudElementCrosshair
+-- loads -- the class does NOT exist in CLASS yet when this mod file runs at boot, so a
+-- direct CLASS.HudElementCrosshair reference would be nil and the hook would silently
+-- never register. pcall the body so any reticle-style change can never crash -- worst
+-- case the flash just stops.
+local ok_cross_hook = pcall(function()
+	mod:hook_safe("HudElementCrosshair", "update", function(self, dt)
+		pcall(crosshair_flash_update, self, dt)
+	end)
+end)
+mod:info("BackstabHitboxDisplay: registered HudElementCrosshair.update hook (crosshair flash) ok=%s", tostring(ok_cross_hook))
 
 -- Register the crosshair HUD element (Backstab counter). PATCH SAFETY: pcall the
 -- registration so a DMF/HUD API change disables only the counter, not the whole mod.

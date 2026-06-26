@@ -19,12 +19,24 @@ scripts/mods/BackstabHitboxDisplay/
 
 ## In-game settings (performance levers)
 
-- **Max render distance** — skip enemies beyond N meters (biggest perf lever).
+- **Backstab cone distance** — how far the ground red cone (and its facing arrow) draws.
+- **Overhead cone distance** — independent distance for the overhead cone, so you can keep
+  it visible further out without cluttering the ground.
+- **Head marker render distance** — independent distance for the head sphere.
+- **Flash crosshair on backstab** + **Crosshair flash color** — briefly tints the in-game
+  crosshair a preset colour when a backstab connects. Separate toggle; the "Backstab"
+  counter text is unaffected. Swaps the reticle's colour table for the flash and restores
+  the original after, so the game's shared HUD colours are never mutated.
 - **Max enemies drawn** — hard cap, nearest-first.
 - **Recompute interval** — throttle the enemy scan (0 = every frame).
 - **Backstab cone angle** — the approximation knob (see below).
 - **Cone radius / opacity** — visuals.
 - **Show enemy facing arrow** — debug aid for verifying facing math.
+- **Hide enemies behind walls (line-of-sight)** — off by default. Culls the cone +
+  head marker for enemies whose head is occluded by world geometry. Casts one
+  line-of-sight ray (game filter `filter_minion_line_of_sight_check`) per drawn
+  enemy from the first-person camera; it ignores other enemies, so they never count
+  as occluders. Costs more at large render distance / enemy caps, hence opt-in.
 
 ## Backstab mechanic — CONFIRMED from source
 

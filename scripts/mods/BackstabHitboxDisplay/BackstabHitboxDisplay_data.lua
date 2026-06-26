@@ -19,15 +19,39 @@ return {
 				default_value = true,
 			},
 			{
-				-- Only draw on enemies worth backstabbing: elites, specials, ogryns,
-				-- monsters/bosses. Trash hordes are skipped. Off = draw on everything.
-				setting_id = "only_special_enemies",
+				-- Which enemy classes get an overlay -- three independent toggles.
+				-- "Small mobs" = trash horde breeds (off by default: they die to anything).
+				setting_id = "show_small_mobs",
+				type = "checkbox",
+				default_value = false,
+			},
+			{
+				-- Elites, specials and ogryn-class enemies (Crushers, Trappers, Maulers, ...).
+				setting_id = "show_elites",
 				type = "checkbox",
 				default_value = true,
 			},
 			{
-				-- Master performance lever: enemies further than this are skipped entirely.
-				-- ~18m is roughly a few seconds of sprint -- close-range, not across the map.
+				-- Monstrosities / captains (Beast of Nurgle, Twins, Plague Ogryn, ...).
+				setting_id = "show_bosses",
+				type = "checkbox",
+				default_value = true,
+			},
+			{
+				-- Occlusion cull (OFF by default): hide the cone + head marker for any
+				-- enemy whose head is behind world geometry (walls/cover) from your view.
+				-- One line-of-sight ray per drawn enemy; it passes through other enemies,
+				-- so they never count as occluders. Costs more the larger your render
+				-- distance / max-enemies, hence opt-in.
+				setting_id = "occlusion_cull",
+				type = "checkbox",
+				default_value = false,
+			},
+			{
+				-- Distance for the ground backstab cone (and its facing arrow). The overhead
+				-- cone and head sphere have their own distances. ~18m is roughly a few seconds
+				-- of sprint -- close-range, not across the map. (id kept as max_distance so
+				-- existing saved values carry over despite the clearer label.)
 				setting_id = "max_distance",
 				type = "numeric",
 				default_value = 18,
@@ -131,13 +155,26 @@ return {
 				unit_text = " m",
 			},
 			{
+				-- The overhead cone has its own distance, independent of the ground cone --
+				-- e.g. keep it further out for at-a-glance awareness without cluttering the
+				-- ground with cones across the room.
+				setting_id = "overhead_distance",
+				type = "numeric",
+				default_value = 18,
+				range = { 5, 60 },
+				decimals_number = 0,
+				unit_text = " m",
+			},
+			{
 				-- Backstab counter / combo near the crosshair (shows "Backstab", "Backstab x2", ...).
 				setting_id = "show_combo",
 				type = "checkbox",
 				default_value = true,
 			},
 			{
-				-- Counter hides (and the streak ends) this long after your last backstab.
+				-- How long after your last backstab the counter stays on screen, then HIDES.
+				-- The streak itself is not reset by this -- only a non-backstab melee hit
+				-- breaks it -- so a later backstab continues the count where it left off.
 				setting_id = "combo_timeout",
 				type = "numeric",
 				default_value = 3.5,
@@ -156,6 +193,29 @@ return {
 				setting_id = "show_weakspot_icon",
 				type = "checkbox",
 				default_value = true,
+			},
+			{
+				-- Briefly flash the GAME crosshair to a chosen colour on a backstab hit.
+				-- Independent of the "Backstab" counter text (which is unaffected).
+				setting_id = "color_crosshair",
+				type = "checkbox",
+				default_value = true,
+			},
+			{
+				-- Which colour the crosshair flashes on a backstab.
+				setting_id = "crosshair_color",
+				type = "dropdown",
+				default_value = "green",
+				options = {
+					{ text = "color_green",   value = "green" },
+					{ text = "color_cyan",    value = "cyan" },
+					{ text = "color_blue",    value = "blue" },
+					{ text = "color_magenta", value = "magenta" },
+					{ text = "color_yellow",  value = "yellow" },
+					{ text = "color_orange",  value = "orange" },
+					{ text = "color_white",   value = "white" },
+					{ text = "color_red",     value = "red" },
+				},
 			},
 			{
 				-- Debug only: periodic diagnostics + measured head radii to the console log.

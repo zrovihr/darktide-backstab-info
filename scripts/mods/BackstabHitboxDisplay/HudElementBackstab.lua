@@ -54,7 +54,7 @@ HudElementBackstab.init = function(self, parent, draw_layer, start_scale)
 	})
 	self.pulse_t = 0
 	self.kill_t = 0
-	self.show_t = 0   -- display timeout: counter hides (and streak ends) when this runs out
+	self.show_t = 0   -- display timeout: counter HIDES when this runs out (streak is NOT reset)
 end
 
 HudElementBackstab._update_impl = function(self, dt, t, ui_renderer, render_settings, input_service)
@@ -75,12 +75,10 @@ HudElementBackstab._update_impl = function(self, dt, t, ui_renderer, render_sett
 	if self.kill_t > 0 then
 		self.kill_t = math.max(0, self.kill_t - dt)
 	end
+	-- Counter just HIDES when this runs out; the streak is NOT reset. Only a non-backstab
+	-- melee hit breaks it (see register_melee_hit), so a later backstab continues the count.
 	if self.show_t > 0 then
 		self.show_t = math.max(0, self.show_t - dt)
-		if self.show_t == 0 then
-			mod.bs_combo = 0
-			mod.bs_weak = false
-		end
 	end
 
 	local combo = mod.bs_combo or 0
